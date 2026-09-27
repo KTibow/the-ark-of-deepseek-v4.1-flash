@@ -1,0 +1,37 @@
+name: Probe V4.1 Flash hosts
+
+on: workflow_dispatch
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Send every host an image URL and a tool
+        run: python3 probe.py
+        env:
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
+
+      - name: Attest the raw results
+        id: attest
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: results/*
+
+      - name: Publish the raw results and the attestation as a release
+        run: |
+          cp "${{ steps.attest.outputs.bundle-path }}" attestation.jsonl
+          gh release create "probe-${{ github.run_id }}" results/* attestation.jsonl --title "Probe $(date -u +%F)" --notes-file results/summary.md
+        env:
+          GH_TOKEN: ${{ github.token }}
