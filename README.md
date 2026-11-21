@@ -17,9 +17,9 @@ So a host's requests go to DeepSeek when they come back with DeepSeek's tool-cal
 
 [`probe.py`](probe.py) runs in GitHub Actions ([workflow](.github/workflows/probe.yml)). It:
 
-1. Saves OpenRouter's list of V4.1 Flash hosts.
+1. Saves OpenRouter's list of hosts for both V4.1 Flash listings, `deepseek/deepseek-v4.1-flash` and `deepseek/deepseek-v4.1-flash-1017`.
 2. Starts [`image_server.py`](image_server.py), which serves a red square at a public `https://<random words>.trycloudflare.com` address. Cloudflare tells the server the IP address of each download.
-3. Sends every V4.1 Flash host, and Seed, this request 6 times, pinned to that host with `"provider": {"only": ["<host>"], "allow_fallbacks": false}`. Each request's image URL is unique, so each download can be matched to its request.
+3. Sends every host of both listings, and Seed, this request 6 times, pinned to that host with `"provider": {"only": ["<host>"], "allow_fallbacks": false}`. Each request's image URL is unique, so each download can be matched to its request.
 
    ```json
    {
@@ -35,7 +35,8 @@ So a host's requests go to DeepSeek when they come back with DeepSeek's tool-cal
 
    (Seed's request leaves out `reasoning`.) It retries a rate-limited (429) request up to 4 times, 30 seconds apart, and keeps every attempt.
 4. Fetches OpenRouter's generation record for every request that worked, and looks up the owner of every IP address that downloaded an image.
-5. Writes `results/<host>.json` for each host (every attempt's request body, timestamps, HTTP status, response headers and raw response body, plus the generation record; the API key is not included), `results/downloads.json` (every download with its headers, and the registry lookups), and `results/summary.md`. The summary counts, for each host, how many requests gave each combination of tool-call id format, `system_fingerprint`, `upstream_id` format and downloader.
+5. Asks DeepSeek V4 Pro 0813 at StreamLake and at DeepSeek, and GLM 5.1 at Novita, three questions about June 1989, 4 times each, and counts how often the answer is one of the canned Chinese refusals that ByteDance's content filter returns in place of the model's answer (for example `你好，我无法给到相关内容`, "Hello, I can't provide related content"). DeepSeek's own endpoint is the comparison.
+6. Writes `results/<model>--<host>.json` for each model at each host (every attempt's request body, timestamps, HTTP status, response headers and raw response body, plus the generation record; the API key is not included), `results/downloads.json` (every download with its headers, and the registry lookups), `results/june-1989.json` (every question and answer), and `results/summary.md`. The summary counts, for each host, how many requests gave each combination of tool-call id format, `system_fingerprint`, `upstream_id` format and downloader, and then, for each question, how many answers were a canned refusal.
 
 ### Attestation
 

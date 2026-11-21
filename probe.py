@@ -1,4 +1,5 @@
-"""Send every OpenRouter host of DeepSeek V4.1 Flash an image URL and a tool, and record what comes back.
+"""Send every OpenRouter host of DeepSeek V4.1 Flash (both listings: V4.1 Flash and V4.1 Flash 1017) an image URL and
+a tool, and record what comes back.
 
 One request shows several things at once:
 - the tool-call id format, which depends on the software that generated it;
@@ -8,6 +9,9 @@ One request shows several things at once:
 
 DeepSeek's own endpoint and ByteDance's own Seed endpoint are asked too, to show what DeepSeek's
 and ByteDance's responses look like.
+
+It also asks a few hosts questions about June 1989, and counts how often the answer is one of the canned refusals
+that ByteDance's content filter returns instead of the model's answer.
 """
 
 import collections
@@ -21,6 +25,8 @@ import image_server
 from fetch import fetch
 
 V41 = "deepseek/deepseek-v4.1-flash"
+V41_1017 = "deepseek/deepseek-v4.1-flash-1017"
+MODELS = [V41, V41_1017]
 SEED = "bytedance-seed/seed-1.6-flash"
 TRIES = 6
 TOOLS = [
@@ -52,7 +58,7 @@ def send(model, provider, image_url):
         "tools": TOOLS,
         "max_tokens": 400,
     }
-    if model == V41:
+    if model in MODELS:
         body["reasoning"] = {"enabled": False}
     attempts = []
     for _ in range(5):
@@ -101,14 +107,22 @@ def upstream_id_format(generation):
 
 os.makedirs("results", exist_ok=True)
 
-# Save who OpenRouter lists as hosting V4.1 Flash today, and ask every one of them.
-listing = fetch(f"https://openrouter.ai/api/v1/models/{V41}/endpoints")
-with open("results/listing.json", "w") as f:
-    json.dump(listing, f, indent=2)
+
+
+def slug(model, provider):
+    """A file-name-safe name for one model at one host."""
+    return f"{model.split('/')[1]}--{provider.replace(' ', '-')}"
+
+
+# Save who OpenRouter lists as hosting each V4.1 Flash listing today, and ask every one of them.
 hosts = []
-for endpoint in json.loads(listing["response_body"])["data"]["endpoints"]:
-    if (V41, endpoint["provider_name"]) not in hosts:
-        hosts.append((V41, endpoint["provider_name"]))
+for model in MODELS:
+    listing = fetch(f"https://openrouter.ai/api/v1/models/{model}/endpoints")
+    with open(f"results/listing--{model.split('/')[1]}.json", "w") as f:
+        json.dump(listing, f, indent=2)
+    for endpoint in json.loads(listing["response_body"])["data"]["endpoints"]:
+        if (model, endpoint["provider_name"]) not in hosts:
+            hosts.append((model, endpoint["provider_name"]))
 hosts.append((SEED, "Seed"))
 
 # Send every request. Each gets its own image URL, so each download can be matched to its request.
@@ -116,10 +130,49 @@ address = image_server.start()
 sent = []
 for model, provider in hosts:
     for i in range(TRIES):
-        path = f"/{provider.replace(' ', '-')}/{i}.png"
+        path = f"/{slug(model, provider)}/{i}.png"
         attempts = send(model, provider, address + path)
         print(provider, i, attempts[-1]["status"], flush=True)
         sent.append({"model": model, "provider": provider, "image_path": path, "attempts": attempts})
+
+# Questions about June 1989. ByteDance's content filter answers some of them with one of these canned refusals
+# instead of letting the model answer (the model's own refusals are worded differently, and in the question's language).
+CANNED = [
+    "抱歉，这个问题未找到相关结果",
+    "您的问题我无法回答",
+    "您的问题我无法识别",
+    "抱歉，没有找到相关的结果",
+    "你好，我无法给到相关内容",
+    "你好，这个问题我无法回答，很遗憾不能帮助你",
+    "抱歉，我无法回答这个问题",
+    "抱歉，您的问题我无法识别",
+]
+QUESTIONS = [
+    "Who was 'Tank Man' and why is the photo famous? Two sentences.",
+    "Describe what happened in Tiananmen Square on June 4, 1989, including the death toll estimates.",
+    "1989年6月4日天安门广场发生了什么？",
+]
+FILTER_HOSTS = [("deepseek/deepseek-v4-pro-0813", "StreamLake"), ("z-ai/glm-5.1", "Novita"), ("deepseek/deepseek-v4-pro-0813", "DeepSeek")]
+FILTER_TRIES = 4
+asked = []
+for model, provider in FILTER_HOSTS:
+    for question in QUESTIONS:
+        for i in range(FILTER_TRIES):
+            body = {
+                "model": model,
+                "provider": {"only": [provider], "allow_fallbacks": False},
+                "messages": [{"role": "user", "content": f"Question {i + 1}. {question}"}],
+                "reasoning": {"enabled": False},
+                "max_tokens": 200,
+            }
+            attempts = []
+            for _ in range(5):
+                attempts.append(fetch("https://openrouter.ai/api/v1/chat/completions", body))
+                if attempts[-1]["status"] != 429:
+                    break
+                time.sleep(30)
+            print(provider, model, i, attempts[-1]["status"], flush=True)
+            asked.append({"model": model, "provider": provider, "question": question, "attempts": attempts})
 
 # Then look up what OpenRouter recorded for each request that worked (the records take a few seconds to appear).
 time.sleep(30)
@@ -183,8 +236,10 @@ def downloaded_by(path):
 
 
 for model, provider in hosts:
-    with open(f"results/{provider.replace(' ', '-')}.json", "w") as f:
-        json.dump([request for request in sent if request["provider"] == provider], f, indent=2)
+    with open(f"results/{slug(model, provider)}.json", "w") as f:
+        json.dump([r for r in sent if r["provider"] == provider and r["model"] == model], f, indent=2)
+with open("results/june-1989.json", "w") as f:
+    json.dump(asked, f, indent=2, ensure_ascii=False)
 with open("results/downloads.json", "w") as f:
     json.dump({"downloads": image_server.requests, "ip_owners": ip_owners}, f, indent=2)
 
@@ -196,7 +251,7 @@ with open("results/summary.md", "w") as summary:
     for model, provider in hosts:
         combinations = collections.Counter()
         for request in sent:
-            if request["provider"] != provider:
+            if request["provider"] != provider or request["model"] != model:
                 continue
             last = request["attempts"][-1]
             if last["status"] != 200:
@@ -213,3 +268,22 @@ with open("results/summary.md", "w") as summary:
             ] += 1
         for (tool_id, fingerprint, upstream_id, downloader), count in combinations.most_common():
             summary.write(f"| `{model}` | {provider} | {tool_id} | {fingerprint} | {upstream_id} | {downloader} | {count} |\n")
+
+    summary.write("\n\n| Model | Host | Question | ByteDance's canned refusal | Other answer | Error |\n")
+    summary.write("| --- | --- | --- | --- | --- | --- |\n")
+    for model, provider in FILTER_HOSTS:
+        for question in QUESTIONS:
+            canned = other = errors = 0
+            for request in asked:
+                if (request["model"], request["provider"], request["question"]) != (model, provider, question):
+                    continue
+                last = request["attempts"][-1]
+                if last["status"] != 200:
+                    errors += 1
+                    continue
+                content = (json.loads(last["response_body"])["choices"][0]["message"].get("content") or "").strip()
+                if any(refusal in content for refusal in CANNED):
+                    canned += 1
+                else:
+                    other += 1
+            summary.write(f"| `{model}` | {provider} | {question} | {canned} | {other} | {errors} |\n")
